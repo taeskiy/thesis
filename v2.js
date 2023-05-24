@@ -3,7 +3,7 @@ const mysql = require('mysql');
 const { Telegraf, Markup } = require('telegraf');
 const LocalSession = require('telegraf-session-local');
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
+//   const bot = new Telegraf('YOUR_TELEGRAM_BOT_TOKEN');
 const localSession = new LocalSession({ database: 'session_db.json' });
 
 bot.use(localSession.middleware());
@@ -46,9 +46,9 @@ function getLocationMenuButtons(page) {
         const slicedLocations = results.slice(startIndex, endIndex);
 
         const locationButtons = chunkArray(
-          slicedLocations.map((location) =>
+          slicedLocations.map((location) => [
             Markup.button.callback(location.name, `location_${location.id}`)
-          ),
+          ]),
           itemsPerRow
         );
 
@@ -63,7 +63,7 @@ function getLocationMenuButtons(page) {
         }
 
         resolve([
-          ...locationButtons,
+          ...locationButtons.flat(),
           navigationButtons,
           [Markup.button.callback('Главное меню 📲', 'main_menu')],
         ]);
@@ -75,7 +75,12 @@ function getLocationMenuButtons(page) {
 function showMainMenu(ctx) {
   ctx.reply('Главное меню:', {
     reply_markup: {
-      keyboard: [['Локации 🗺️'], ['Контакты ☎️'], ['Режим работы 🕑']],
+      keyboard: [
+        ['Локации 🗺️'],
+        ['Контакты ☎️'],
+        ['Режим работы 🕑'],
+        ['ЗАБРОНИРОВАТЬ'],
+      ],
       resize_keyboard: true,
     },
   });
@@ -96,6 +101,20 @@ function showLocationMenu(ctx, page) {
     });
 }
 
+function showReservationMenu(ctx) {
+  const buttons = [
+    [Markup.button.callback('Показать доступные станции', 'show_stations')],
+    [Markup.button.callback('Создать бронирование', 'create_reservation')],
+    // Add more buttons as needed
+  ];
+
+  ctx.reply('Меню бронирования:', {
+    reply_markup: {
+      inline_keyboard: buttons,
+    },
+  });
+}
+
 bot.command('start', (ctx) => {
   showMainMenu(ctx);
 });
@@ -110,8 +129,10 @@ bot.on('text', (ctx) => {
     showMainMenu(ctx);
   } else if (text === 'Контакты ☎️') {
     ctx.reply('Контакты:\n\n+996 (500) 333-351\nevionkg@gmail.com\nhttps://evion.kg/about');
-  } else if (text == 'Режим работы 🕑') {
+  } else if (text === 'Режим работы 🕑') {
     ctx.reply('11-00 до 23-00\nс 11:00 до 01:00 пт-сб\n\nПодробнее тут: https://evion.kg');
+  } else if (text === 'ЗАБРОНИРОВАТЬ') {
+    showReservationMenu(ctx);
   }
 });
 
@@ -145,40 +166,51 @@ bot.action(/location_(.+)/, (ctx) => {
   });
 });
 
+bot.action('show_stations', (ctx) => {
+  // Fetch and display the available stations
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error(err);
+      ctx.reply('An error occurred. Please try again later.');
+      return;
+    }
+
+    connection.query('SELECT * FROM locations WHERE reserved = 0', (error, results) => {
+      connection.release();
+      if (error) {
+        console.error(error);
+        ctx.reply('An error occurred. Please try again later.');
+        return;
+      }
+
+      if (results.length === 0) {
+        ctx.reply('There are no available stations at the moment.');
+        return;
+      }
+
+      const stationNames = results.map((station) => station.name).join('\n');
+      ctx.reply(`Available Stations:\n${stationNames}`);
+    });
+  });
+});
+
+bot.action('create_reservation', (ctx) => {
+  // Handle create reservation logic here
+  ctx.reply('Create reservation functionality coming soon!');
+});
+
 bot.action('previous', (ctx) => {
   const currentPage = ctx.session.page || 0;
   const newPage = Math.max(currentPage - 1, 0);
   ctx.session.page = newPage;
-  getLocationMenuButtons(newPage)
-    .then((buttons) => {
-      ctx.editMessageText('Выберите локацию:', {
-        reply_markup: {
-          inline_keyboard: buttons,
-        },
-      });
-    })
-    .catch((err) => {
-      console.error(err);
-      ctx.reply('An error occurred. Please try again later.');
-    });
+  showLocationMenu(ctx, newPage);
 });
 
 bot.action('next', (ctx) => {
   const currentPage = ctx.session.page || 0;
   const newPage = currentPage + 1;
   ctx.session.page = newPage;
-  getLocationMenuButtons(newPage)
-    .then((buttons) => {
-      ctx.editMessageText('Выберите локацию:', {
-        reply_markup: {
-          inline_keyboard: buttons,
-        },
-      });
-    })
-    .catch((err) => {
-      console.error(err);
-      ctx.reply('An error occurred. Please try again later.');
-    });
+  showLocationMenu(ctx, newPage);
 });
 
 bot.action('main_menu', (ctx) => {
