@@ -34,23 +34,22 @@ function getLocationMenuButtons(page) {
         return;
       }
 
-      connection.query('SELECT * FROM ChargingStations', (error, results) => {
+      let query = 'SELECT DISTINCT ChargingStations.station_id, ChargingStations.name FROM ChargingStations';
+      if (page !== null) {
+        const startIndex = page * itemsPerPage;
+        query += ` LIMIT ${startIndex}, ${itemsPerPage}`;
+      }
+
+      connection.query(query, (error, results) => {
         connection.release();
         if (error) {
           reject(error);
           return;
         }
 
-        const startIndex = page * itemsPerPage;
-        const endIndex = startIndex + itemsPerPage;
-        const slicedLocations = results.slice(startIndex, endIndex);
-
-        const locationButtons = chunkArray(
-          slicedLocations.map((location) => [
-            Markup.button.callback(location.name, `location_${location.station_id}`)
-          ]),
-          itemsPerRow
-        );
+        const locationButtons = results.map((location) => [
+          Markup.button.callback(location.name, `location_${location.station_id}`)
+        ]);
 
         const navigationButtons = [];
 
@@ -58,12 +57,12 @@ function getLocationMenuButtons(page) {
           navigationButtons.push(Markup.button.callback('Предыдущие станции ⏪', 'previous'));
         }
 
-        if (endIndex < results.length) {
+        if (results.length === itemsPerPage) {
           navigationButtons.push(Markup.button.callback('Ещё станции ⏩', 'next'));
         }
 
         resolve([
-          ...locationButtons.flat(),
+          ...locationButtons,
           navigationButtons,
           [Markup.button.callback('Главное меню 📲', 'main_menu')],
         ]);
@@ -171,6 +170,34 @@ function sendLocationAndStations(ctx, location) {
   });
 }
 
+function getLocationsWithReservedValue() {
+  return new Promise((resolve, reject) => {
+    pool.getConnection((err, connection) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+
+      const query = `
+        SELECT DISTINCT ChargingStations.station_id, ChargingStations.name
+        FROM ChargingStations
+        INNER JOIN Chargers ON ChargingStations.station_id = Chargers.station_id
+        INNER JOIN Reservations ON Chargers.charger_id = Reservations.charger_id
+      `;
+
+      connection.query(query, (error, results) => {
+        connection.release();
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(results);
+      });
+    });
+  });
+}
+
 function isUserRegistered(userId) {
   return new Promise((resolve, reject) => {
     pool.getConnection((err, connection) => {
@@ -192,60 +219,81 @@ function isUserRegistered(userId) {
   });
 }
 
-function registerUser(telegramId, username, name, phoneNumber) {
-  return new Promise((resolve, reject) => {
-    pool.getConnection((err, connection) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-
-      const query = 'INSERT INTO Users (telegram_id, username, name, phone_number) VALUES (?, ?, ?, ?)';
-
-      connection.query(query, [telegramId, username, name, phoneNumber], (error) => {
-        connection.release();
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
-      });
-    });
-  });
-}
-
 function showReservationMenu(ctx) {
-  const userId = ctx.from.id;
-
-  // Check if user is already registered
-  isUserRegistered(userId)
-    .then((registered) => {
-      if (registered) {
-        // Logic to handle reservation process
-        ctx.reply('Процесс бронирования будет добавлен в ближайшем будущем!');
-      } else {
-        ctx.reply('Пожалуйста, отправьте свой номер телефона:', {
-          reply_markup: {
-            keyboard: [
-              [
-                {
-                  text: 'Отправить номер телефона',
-                  request_contact: true,
-                },
+    const userId = ctx.from.id;
+  
+    isUserRegistered(userId)
+      .then((registered) => {
+        if (registered) {
+          // Existing registered user
+          // Your existing code for showing available reservations
+        } else {
+          // New user, send registration button with contacts card
+          ctx.reply('Пожалуйста, поделитесь своим номером телефона.', {
+            reply_markup: {
+              keyboard: [
+                [
+                  {
+                    text: 'Поделиться номером телефона',
+                    request_contact: true,
+                  },
+                ],
               ],
-            ],
-            resize_keyboard: true,
-            one_time_keyboard: true,
-          },
-        });
-      }
-    })
-    .catch((error) => {
-      console.error(error);
-      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
-    });
-}
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          });
+        }
+      })
+      .catch((error) => {
+        console.error(error);
+        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+      });
+  }
+  
+  // Handle the contact information
+  bot.on('contact', (ctx) => {
+    const userId = ctx.from.id;
+    const { phone_number, first_name, last_name } = ctx.message.contact;
+  
+    // Update the user's registration information in the database (if needed)
+    isUserRegistered(userId)
+      .then((registered) => {
+        if (!registered) {
+          // Perform the registration process (if necessary)
+          pool.getConnection((err, connection) => {
+            if (err) {
+              console.error(err);
+              ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+              return;
+            }
+  
+            connection.query(
+              'INSERT INTO Users (telegram_id, phone_number, first_name, last_name) VALUES (?, ?, ?, ?)',
+              [userId, phone_number, first_name, last_name],
+              (error, results) => {
+                connection.release();
+                if (error) {
+                  console.error(error);
+                  ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+                  return;
+                }
+  
+                ctx.reply('Спасибо за регистрацию! Теперь вы можете использовать бронирование.');
+              }
+            );
+          });
+        } else {
+          // User is already registered
+          ctx.reply('Вы уже зарегистрированы. Можете использовать бронирование.');
+        }
+      })
+      .catch((error) => {
+        console.error(error);
+        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+      });
+  });
+  
 
 bot.command('start', (ctx) => {
   showMainMenu(ctx);
@@ -316,19 +364,6 @@ bot.action('next', (ctx) => {
   const newPage = currentPage + 1;
   ctx.session.page = newPage;
   showLocationMenu(ctx, newPage);
-});
-
-bot.on('contact', (ctx) => {
-  const { user_id, username, first_name, last_name, phone_number } = ctx.message.contact;
-
-  registerUser(user_id, username, `${first_name} ${last_name}`, phone_number)
-    .then(() => {
-      ctx.reply('Регистрация успешно выполнена!');
-    })
-    .catch((error) => {
-      console.error(error);
-      ctx.reply('Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.');
-    });
 });
 
 bot.launch();
