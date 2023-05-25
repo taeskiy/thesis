@@ -108,6 +108,67 @@ function showLocationMenu(ctx, page) {
       ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
     });
 }
+function sendLocationAndStations(ctx, location) {
+    const locationName = location.name;
+  
+    // Fetch stations and charger information within the selected location
+    pool.getConnection((err, connection) => {
+      if (err) {
+        console.error(err);
+        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+        return;
+      }
+  
+      connection.query(
+        `SELECT Chargers.charger_id, ChargerTypes.name, ChargerTypes.wattage, ChargerTypes.country_of_origin
+         FROM Chargers
+         INNER JOIN ChargerTypes ON Chargers.charger_type_id = ChargerTypes.charger_type_id
+         WHERE Chargers.station_id = ?`,
+        [location.station_id],
+        (error, results) => {
+          connection.release();
+          if (error) {
+            console.error(error);
+            ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+            return;
+          }
+  
+          if (results.length === 0) {
+            ctx.reply(`В выбранной локации (${locationName}) нет доступных станций.`);
+            showLocationMenu(ctx, ctx.session.page);
+            return;
+          }
+  
+          let stationInfo = `Выбранная локация: ${locationName}\n\nСтанции:\n`;
+          for (let i = 0; i < results.length; i++) {
+            const station = results[i];
+            const stationNumber = i + 1;
+            const chargerName = station.name;
+            const chargerWattage = station.wattage;
+            const chargerCountry = station.country_of_origin;
+            stationInfo += `${stationNumber}. Имя: ${chargerName} | Мощность: ${chargerWattage} кВт | Страна производства: ${chargerCountry}\n`;
+          }
+  
+          ctx.reply(stationInfo)
+            .then(() => {
+              ctx.telegram.sendLocation(ctx.chat.id, location.latitude, location.longitude)
+                .catch((err) => {
+                  console.error(err);
+                  ctx.reply('Произошла ошибка при отправке геолокации. Пожалуйста, попробуйте позже.');
+                })
+                .finally(() => {
+                  showLocationMenu(ctx, ctx.session.page);
+                });
+            })
+            .catch((err) => {
+              console.error(err);
+              ctx.reply('Произошла ошибка при отправке информации о станциях. Пожалуйста, попробуйте позже.');
+            });
+        }
+      );
+    });
+  }
+  
 
 function showReservationMenu(ctx) {
   const buttons = [
@@ -145,41 +206,40 @@ bot.on('text', (ctx) => {
 });
 
 bot.action(/location_(.+)/, (ctx) => {
-  const locationId = ctx.match[1];
-
-  pool.getConnection((err, connection) => {
-    if (err) {
-      console.error(err);
-      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
-      return;
-    }
-
-    connection.query('SELECT * FROM ChargingStations WHERE station_id = ?', [locationId], (error, results) => {
-      connection.release();
-      if (error) {
-        console.error(error);
+    const locationId = ctx.match[1];
+  
+    pool.getConnection((err, connection) => {
+      if (err) {
+        console.error(err);
         ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
         return;
       }
-
-      if (results.length === 0) {
-        ctx.reply('Выбранная локация не найдена.');
-        return;
-      }
-
-      const location = results[0];
-      ctx.reply(`Выбранная локация: ${location.name}`)
-        .then(() => {
-          ctx.telegram.sendLocation(ctx.chat.id, location.latitude, location.longitude);
-          showLocationMenu(ctx, ctx.session.page);
-        })
-        .catch((err) => {
-          console.error(err);
-          ctx.reply('Произошла ошибка при отправке локации. Пожалуйста, попробуйте позже.');
-        });
+  
+      connection.query('SELECT * FROM ChargingStations WHERE station_id = ?', [locationId], (error, results) => {
+        connection.release();
+        if (error) {
+          console.error(error);
+          ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+          return;
+        }
+  
+        if (results.length === 0) {
+          ctx.reply('Выбранная локация не найдена.');
+          return;
+        }
+  
+        const location = results[0];
+        ctx.reply(`Выбранная локация: ${location.name}`)
+          .then(() => {
+            sendLocationAndStations(ctx, location);
+          })
+          .catch((err) => {
+            console.error(err);
+            ctx.reply('Произошла ошибка при отправке локации. Пожалуйста, попробуйте позже.');
+          });
+      });
     });
   });
-});
 
 bot.action('show_stations', (ctx) => {
   // Fetch and display the available stations
