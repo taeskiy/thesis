@@ -3,7 +3,6 @@ const mysql = require('mysql');
 const { Telegraf, Markup } = require('telegraf');
 const LocalSession = require('telegraf-session-local');
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-//   const bot = new Telegraf('YOUR_TELEGRAM_BOT_TOKEN');
 const localSession = new LocalSession({ database: 'session_db.json' });
 
 bot.use(localSession.middleware());
@@ -34,7 +33,7 @@ function getLocationMenuButtons(page) {
         return;
       }
 
-      connection.query('SELECT * FROM locations', (error, results) => {
+      connection.query('SELECT * FROM ChargingStations', (error, results) => {
         connection.release();
         if (error) {
           reject(error);
@@ -47,7 +46,7 @@ function getLocationMenuButtons(page) {
 
         const locationButtons = chunkArray(
           slicedLocations.map((location) => [
-            Markup.button.callback(location.name, `location_${location.id}`)
+            Markup.button.callback(location.name, `location_${location.station_id}`)
           ]),
           itemsPerRow
         );
@@ -79,7 +78,7 @@ function showMainMenu(ctx) {
         ['Локации 🗺️'],
         ['Контакты ☎️'],
         ['Режим работы 🕑'],
-        ['ЗАБРОНИРОВАТЬ'],
+        ['Забронировать'],
       ],
       resize_keyboard: true,
     },
@@ -89,15 +88,24 @@ function showMainMenu(ctx) {
 function showLocationMenu(ctx, page) {
   getLocationMenuButtons(page)
     .then((buttons) => {
-      ctx.reply('Выберите локацию:', {
-        reply_markup: {
-          inline_keyboard: buttons,
-        },
-      });
+      const replyMarkup = {
+        inline_keyboard: buttons,
+      };
+
+      if (ctx.update.callback_query) {
+        ctx.editMessageReplyMarkup(replyMarkup)
+          .catch((err) => {
+            if (err.response.description !== 'Bad Request: message is not modified') {
+              console.error(err);
+            }
+          });
+      } else {
+        ctx.reply('Выберите локацию:', { reply_markup: replyMarkup });
+      }
     })
     .catch((err) => {
       console.error(err);
-      ctx.reply('An error occurred. Please try again later.');
+      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
     });
 }
 
@@ -130,8 +138,8 @@ bot.on('text', (ctx) => {
   } else if (text === 'Контакты ☎️') {
     ctx.reply('Контакты:\n\n+996 (500) 333-351\nevionkg@gmail.com\nhttps://evion.kg/about');
   } else if (text === 'Режим работы 🕑') {
-    ctx.reply('11-00 до 23-00\nс 11:00 до 01:00 пт-сб\n\nПодробнее тут: https://evion.kg');
-  } else if (text === 'ЗАБРОНИРОВАТЬ') {
+    ctx.reply('11:00 до 23:00\nс 11:00 до 01:00 пт-сб\n\nПодробнее тут: https://evion.kg');
+  } else if (text === 'Забронировать') {
     showReservationMenu(ctx);
   }
 });
@@ -142,26 +150,33 @@ bot.action(/location_(.+)/, (ctx) => {
   pool.getConnection((err, connection) => {
     if (err) {
       console.error(err);
-      ctx.reply('An error occurred. Please try again later.');
+      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
       return;
     }
 
-    connection.query('SELECT * FROM locations WHERE id = ?', [locationId], (error, results) => {
+    connection.query('SELECT * FROM ChargingStations WHERE station_id = ?', [locationId], (error, results) => {
       connection.release();
       if (error) {
         console.error(error);
-        ctx.reply('An error occurred. Please try again later.');
+        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
         return;
       }
 
       if (results.length === 0) {
-        ctx.reply('The selected location could not be found.');
+        ctx.reply('Выбранная локация не найдена.');
         return;
       }
 
       const location = results[0];
-      ctx.telegram.sendLocation(ctx.chat.id, location.latitude, location.longitude);
-      showLocationMenu(ctx, ctx.session.page);
+      ctx.reply(`Выбранная локация: ${location.name}`)
+        .then(() => {
+          ctx.telegram.sendLocation(ctx.chat.id, location.latitude, location.longitude);
+          showLocationMenu(ctx, ctx.session.page);
+        })
+        .catch((err) => {
+          console.error(err);
+          ctx.reply('Произошла ошибка при отправке локации. Пожалуйста, попробуйте позже.');
+        });
     });
   });
 });
@@ -171,32 +186,32 @@ bot.action('show_stations', (ctx) => {
   pool.getConnection((err, connection) => {
     if (err) {
       console.error(err);
-      ctx.reply('An error occurred. Please try again later.');
+      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
       return;
     }
 
-    connection.query('SELECT * FROM locations WHERE reserved = 0', (error, results) => {
+    connection.query('SELECT * FROM ChargingStations WHERE station_id NOT IN (SELECT DISTINCT charger_id FROM ChargeHistory)', (error, results) => {
       connection.release();
       if (error) {
         console.error(error);
-        ctx.reply('An error occurred. Please try again later.');
+        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
         return;
       }
 
       if (results.length === 0) {
-        ctx.reply('There are no available stations at the moment.');
+        ctx.reply('В данный момент нет доступных станций.');
         return;
       }
 
       const stationNames = results.map((station) => station.name).join('\n');
-      ctx.reply(`Available Stations:\n${stationNames}`);
+      ctx.reply(`Доступные станции:\n${stationNames}`);
     });
   });
 });
 
 bot.action('create_reservation', (ctx) => {
   // Handle create reservation logic here
-  ctx.reply('Create reservation functionality coming soon!');
+  ctx.reply('Функция создания бронирования будет доступна в ближайшем будущем!');
 });
 
 bot.action('previous', (ctx) => {
@@ -217,6 +232,10 @@ bot.action('main_menu', (ctx) => {
   showMainMenu(ctx);
 });
 
+bot.command('location', (ctx) => {
+    ctx.session.page = 0;
+    showLocationMenu(ctx, ctx.session.page);
+  });
 bot.launch();
 
-console.log('Location bot with Telegraf and menu is running...');
+console.log('Бот для локаций с помощью Telegraf и меню запущен...')
