@@ -2,6 +2,7 @@ require('dotenv').config();
 const mysql = require('mysql');
 const { Telegraf, Markup } = require('telegraf');
 const LocalSession = require('telegraf-session-local');
+
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const localSession = new LocalSession({ database: 'session_db.json' });
 
@@ -108,80 +109,142 @@ function showLocationMenu(ctx, page) {
       ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
     });
 }
+
 function sendLocationAndStations(ctx, location) {
-    const locationName = location.name;
-  
-    // Fetch stations and charger information within the selected location
+  const locationName = location.name;
+
+  // Fetch stations and charger information within the selected location
+  pool.getConnection((err, connection) => {
+    if (err) {
+      console.error(err);
+      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+      return;
+    }
+
+    connection.query(
+      `SELECT Chargers.charger_id, ChargerTypes.name, ChargerTypes.wattage, ChargerTypes.country_of_origin
+       FROM Chargers
+       INNER JOIN ChargerTypes ON Chargers.charger_type_id = ChargerTypes.charger_type_id
+       WHERE Chargers.station_id = ?`,
+      [location.station_id],
+      (error, results) => {
+        connection.release();
+        if (error) {
+          console.error(error);
+          ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+          return;
+        }
+
+        if (results.length === 0) {
+          ctx.reply(`В выбранной локации (${locationName}) нет доступных станций.`);
+          showLocationMenu(ctx, ctx.session.page);
+          return;
+        }
+
+        let stationInfo = `Выбранная локация: ${locationName}\n\nСтанции:\n`;
+        for (let i = 0; i < results.length; i++) {
+          const station = results[i];
+          const stationNumber = i + 1;
+          const chargerName = station.name;
+          const chargerWattage = station.wattage;
+          const chargerCountry = station.country_of_origin;
+          stationInfo += `${stationNumber}. Имя: ${chargerName} | Мощность: ${chargerWattage} кВт | Страна производства: ${chargerCountry}\n`;
+        }
+
+        ctx.reply(stationInfo)
+          .then(() => {
+            ctx.telegram.sendLocation(ctx.chat.id, location.latitude, location.longitude)
+              .catch((err) => {
+                console.error(err);
+                ctx.reply('Произошла ошибка при отправке геолокации. Пожалуйста, попробуйте позже.');
+              })
+              .finally(() => {
+                showLocationMenu(ctx, ctx.session.page);
+              });
+          })
+          .catch((err) => {
+            console.error(err);
+            ctx.reply('Произошла ошибка при отправке информации о станциях. Пожалуйста, попробуйте позже.');
+          });
+      }
+    );
+  });
+}
+
+function isUserRegistered(userId) {
+  return new Promise((resolve, reject) => {
     pool.getConnection((err, connection) => {
       if (err) {
-        console.error(err);
-        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+        reject(err);
         return;
       }
-  
-      connection.query(
-        `SELECT Chargers.charger_id, ChargerTypes.name, ChargerTypes.wattage, ChargerTypes.country_of_origin
-         FROM Chargers
-         INNER JOIN ChargerTypes ON Chargers.charger_type_id = ChargerTypes.charger_type_id
-         WHERE Chargers.station_id = ?`,
-        [location.station_id],
-        (error, results) => {
-          connection.release();
-          if (error) {
-            console.error(error);
-            ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
-            return;
-          }
-  
-          if (results.length === 0) {
-            ctx.reply(`В выбранной локации (${locationName}) нет доступных станций.`);
-            showLocationMenu(ctx, ctx.session.page);
-            return;
-          }
-  
-          let stationInfo = `Выбранная локация: ${locationName}\n\nСтанции:\n`;
-          for (let i = 0; i < results.length; i++) {
-            const station = results[i];
-            const stationNumber = i + 1;
-            const chargerName = station.name;
-            const chargerWattage = station.wattage;
-            const chargerCountry = station.country_of_origin;
-            stationInfo += `${stationNumber}. Имя: ${chargerName} | Мощность: ${chargerWattage} кВт | Страна производства: ${chargerCountry}\n`;
-          }
-  
-          ctx.reply(stationInfo)
-            .then(() => {
-              ctx.telegram.sendLocation(ctx.chat.id, location.latitude, location.longitude)
-                .catch((err) => {
-                  console.error(err);
-                  ctx.reply('Произошла ошибка при отправке геолокации. Пожалуйста, попробуйте позже.');
-                })
-                .finally(() => {
-                  showLocationMenu(ctx, ctx.session.page);
-                });
-            })
-            .catch((err) => {
-              console.error(err);
-              ctx.reply('Произошла ошибка при отправке информации о станциях. Пожалуйста, попробуйте позже.');
-            });
+
+      connection.query('SELECT * FROM Users WHERE telegram_id = ?', [userId], (error, results) => {
+        connection.release();
+        if (error) {
+          reject(error);
+          return;
         }
-      );
+
+        resolve(results.length > 0);
+      });
     });
-  }
-  
+  });
+}
+
+function registerUser(telegramId, username, name, phoneNumber) {
+  return new Promise((resolve, reject) => {
+    pool.getConnection((err, connection) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+
+      const query = 'INSERT INTO Users (telegram_id, username, name, phone_number) VALUES (?, ?, ?, ?)';
+
+      connection.query(query, [telegramId, username, name, phoneNumber], (error) => {
+        connection.release();
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  });
+}
 
 function showReservationMenu(ctx) {
-  const buttons = [
-    [Markup.button.callback('Показать доступные станции', 'show_stations')],
-    [Markup.button.callback('Создать бронирование', 'create_reservation')],
-    // Add more buttons as needed
-  ];
+  const userId = ctx.from.id;
 
-  ctx.reply('Меню бронирования:', {
-    reply_markup: {
-      inline_keyboard: buttons,
-    },
-  });
+  // Check if user is already registered
+  isUserRegistered(userId)
+    .then((registered) => {
+      if (registered) {
+        // Logic to handle reservation process
+        ctx.reply('Процесс бронирования будет добавлен в ближайшем будущем!');
+      } else {
+        ctx.reply('Пожалуйста, отправьте свой номер телефона:', {
+          reply_markup: {
+            keyboard: [
+              [
+                {
+                  text: 'Отправить номер телефона',
+                  request_contact: true,
+                },
+              ],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        });
+      }
+    })
+    .catch((error) => {
+      console.error(error);
+      ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
+    });
 }
 
 bot.command('start', (ctx) => {
@@ -206,43 +269,8 @@ bot.on('text', (ctx) => {
 });
 
 bot.action(/location_(.+)/, (ctx) => {
-    const locationId = ctx.match[1];
-  
-    pool.getConnection((err, connection) => {
-      if (err) {
-        console.error(err);
-        ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
-        return;
-      }
-  
-      connection.query('SELECT * FROM ChargingStations WHERE station_id = ?', [locationId], (error, results) => {
-        connection.release();
-        if (error) {
-          console.error(error);
-          ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
-          return;
-        }
-  
-        if (results.length === 0) {
-          ctx.reply('Выбранная локация не найдена.');
-          return;
-        }
-  
-        const location = results[0];
-        ctx.reply(`Выбранная локация: ${location.name}`)
-          .then(() => {
-            sendLocationAndStations(ctx, location);
-          })
-          .catch((err) => {
-            console.error(err);
-            ctx.reply('Произошла ошибка при отправке локации. Пожалуйста, попробуйте позже.');
-          });
-      });
-    });
-  });
+  const locationId = ctx.match[1];
 
-bot.action('show_stations', (ctx) => {
-  // Fetch and display the available stations
   pool.getConnection((err, connection) => {
     if (err) {
       console.error(err);
@@ -250,7 +278,7 @@ bot.action('show_stations', (ctx) => {
       return;
     }
 
-    connection.query('SELECT * FROM ChargingStations WHERE station_id NOT IN (SELECT DISTINCT charger_id FROM ChargeHistory)', (error, results) => {
+    connection.query('SELECT * FROM ChargingStations WHERE station_id = ?', [locationId], (error, results) => {
       connection.release();
       if (error) {
         console.error(error);
@@ -259,19 +287,21 @@ bot.action('show_stations', (ctx) => {
       }
 
       if (results.length === 0) {
-        ctx.reply('В данный момент нет доступных станций.');
+        ctx.reply('Выбранная локация не найдена.');
         return;
       }
 
-      const stationNames = results.map((station) => station.name).join('\n');
-      ctx.reply(`Доступные станции:\n${stationNames}`);
+      const location = results[0];
+      ctx.reply(`Выбранная локация: ${location.name}`)
+        .then(() => {
+          sendLocationAndStations(ctx, location);
+        })
+        .catch((err) => {
+          console.error(err);
+          ctx.reply('Произошла ошибка при отправке локации. Пожалуйста, попробуйте позже.');
+        });
     });
   });
-});
-
-bot.action('create_reservation', (ctx) => {
-  // Handle create reservation logic here
-  ctx.reply('Функция создания бронирования будет доступна в ближайшем будущем!');
 });
 
 bot.action('previous', (ctx) => {
@@ -288,14 +318,17 @@ bot.action('next', (ctx) => {
   showLocationMenu(ctx, newPage);
 });
 
-bot.action('main_menu', (ctx) => {
-  showMainMenu(ctx);
+bot.on('contact', (ctx) => {
+  const { user_id, username, first_name, last_name, phone_number } = ctx.message.contact;
+
+  registerUser(user_id, username, `${first_name} ${last_name}`, phone_number)
+    .then(() => {
+      ctx.reply('Регистрация успешно выполнена!');
+    })
+    .catch((error) => {
+      console.error(error);
+      ctx.reply('Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.');
+    });
 });
 
-bot.command('location', (ctx) => {
-    ctx.session.page = 0;
-    showLocationMenu(ctx, ctx.session.page);
-  });
 bot.launch();
-
-console.log('Бот для локаций с помощью Telegraf и меню запущен...')
